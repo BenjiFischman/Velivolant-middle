@@ -1,3 +1,6 @@
-i
 node_modules
 logs
+.env
+dist
+*.log
+coverage
