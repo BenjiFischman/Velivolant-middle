@@ -45,3 +45,5 @@ process.on('SIGTERM', () => {
   logger.info('Server is shutting down');
   // ... cleanup code ...
 });
+
+module.exports = app;
