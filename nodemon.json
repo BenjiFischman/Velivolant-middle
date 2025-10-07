@@ -1,6 +1,6 @@
 {
-  "watch": ["src"],
-  "ext": ".js,.json",
-  "ignore": ["src/**/*.spec.js", "src/**/*.test.js"],
-  "exec": "node -r dotenv/config"
+  "watch": ["."],
+  "ext": "js,json",
+  "ignore": ["node_modules", "**/*.spec.js", "**/*.test.js", "logs"],
+  "exec": "node -r dotenv/config app.js"
 }
