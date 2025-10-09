@@ -2,6 +2,14 @@ const request = require('supertest');
 const jwt = require('jsonwebtoken');
 
 // Mock all dependencies before requiring app
+jest.mock('../db/postgres', () => ({
+  query: jest.fn(),
+  transaction: jest.fn(),
+  close: jest.fn(),
+  pool: { totalCount: 0 },
+  testConnection: jest.fn()
+}));
+
 jest.mock('../redisClient', () => ({
   get: jest.fn(),
   setex: jest.fn(),
@@ -12,6 +20,7 @@ jest.mock('../logger/winstonConfig', () => ({
   info: jest.fn(),
   error: jest.fn(),
   http: jest.fn(),
+  debug: jest.fn(),
 }));
 
 jest.mock('morgan', () => {

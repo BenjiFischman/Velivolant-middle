@@ -4,6 +4,9 @@ module.exports = {
   collectCoverageFrom: [
     '*.js',
     'logger/**/*.js',
+    'controllers/**/*.js',
+    'routes/**/*.js',
+    'db/**/*.js',
     '!node_modules/**',
     '!coverage/**',
     '!dist/**',
@@ -13,10 +16,12 @@ module.exports = {
   ],
   coveragePathIgnorePatterns: ['/node_modules/', '/coverage/', '/dist/', '/logs/'],
   testMatch: ['**/__tests__/**/*.test.js', '**/?(*.)+(spec|test).js'],
-  testPathIgnorePatterns: ['/node_modules/', '/__tests__/setup.js'],
+  testPathIgnorePatterns: ['/node_modules/', '/__tests__/setup.js', '/__tests__/setupDatabase.js'],
   setupFilesAfterEnv: ['./__tests__/setup.js'],
+  testSequencer: './__tests__/testSequencer.js',
   verbose: true,
   clearMocks: true,
   resetMocks: true,
   restoreMocks: true,
+  maxWorkers: 1, // Run tests sequentially for database consistency
 };

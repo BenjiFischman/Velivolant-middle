@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const {
   authMiddleware,
   sessionMiddleware,
@@ -10,10 +11,22 @@ const {
   performanceMiddleware,
 } = require('.');
 
+// Import routes
+const authRoutes = require('./routes/auth');
+
 const app = express();
+
+// CORS configuration for front-end
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Apply middleware
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieMiddleware);
 app.use(sessionMiddleware);
 
@@ -21,7 +34,19 @@ app.use(sessionMiddleware);
 app.use(loggingMiddleware.httpLogger);
 app.use(performanceMiddleware);
 
-// Example route with custom logging
+// Mount auth routes
+app.use('/api/auth', authRoutes);
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Example protected route
 app.get(
   '/api/data',
   authMiddleware.verifyToken,
@@ -33,17 +58,31 @@ app.get(
   }
 );
 
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found'
+  });
+});
+
 // Error handling
 app.use(loggingMiddleware.errorLogger);
 app.use((err, req, res, next) => {
-  res.status(500).json({ error: 'Internal Server Error' });
-  next();
+  logger.error('Unhandled error:', err);
+  res.status(500).json({ 
+    success: false,
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Internal Server Error' 
+      : err.message 
+  });
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('Server is shutting down');
   // ... cleanup code ...
+  process.exit(0);
 });
 
 module.exports = app;
