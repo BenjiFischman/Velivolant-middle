@@ -115,14 +115,83 @@ module.exports = app;
 
 // Start server if this file is run directly (e.g., `node app.js`)
 if (require.main === module) {
+  const http = require('http');
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    logger.info(`API server listening on port ${PORT}`, {
+  const GRPC_PORT = process.env.GRPC_PORT || 50051;
+  
+  // Create HTTP server
+  const httpServer = http.createServer(app);
+  
+  // Start HTTP server
+  httpServer.listen(PORT, () => {
+    logger.info(`HTTP API server listening on port ${PORT}`, {
       port: PORT,
       env: process.env.NODE_ENV || 'development',
     });
   }).on('error', (error) => {
-    logger.error('Failed to start server', { error: error.message });
+    logger.error('Failed to start HTTP server', { error: error.message });
     process.exit(1);
   });
+
+  // Start gRPC server (optional)
+  if (process.env.ENABLE_GRPC !== 'false') {
+    try {
+      const { startGrpcServer } = require('./grpc/server');
+      const grpcServer = startGrpcServer(GRPC_PORT);
+      logger.info(`gRPC server enabled on port ${GRPC_PORT}`);
+      
+      // Export for graceful shutdown
+      module.exports.grpcServer = grpcServer;
+    } catch (error) {
+      logger.warn('gRPC server not started', { error: error.message });
+    }
+  }
+
+  // Start WebSocket server (optional)
+  if (process.env.ENABLE_WS !== 'false') {
+    try {
+      const WebSocketServer = require('./websocket/server');
+      const wsServer = new WebSocketServer(httpServer);
+      wsServer.startHeartbeat();
+      logger.info('WebSocket server enabled on /ws');
+      
+      // Export for use in routes
+      module.exports.wsServer = wsServer;
+    } catch (error) {
+      logger.warn('WebSocket server not started', { error: error.message });
+    }
+  }
+
+  // Enhanced graceful shutdown
+  const shutdown = () => {
+    logger.info('Server is shutting down...');
+    
+    // Close HTTP server
+    httpServer.close(() => {
+      logger.info('HTTP server closed');
+    });
+
+    // Close gRPC server
+    if (module.exports.grpcServer) {
+      module.exports.grpcServer.forceShutdown();
+      logger.info('gRPC server closed');
+    }
+
+    // Close WebSocket server
+    if (module.exports.wsServer) {
+      module.exports.wsServer.shutdown();
+    }
+
+    // Kill any running tasks
+    const taskRunner = require('./orchestration/taskRunner');
+    taskRunner.killAll();
+
+    setTimeout(() => {
+      logger.info('Forcing shutdown');
+      process.exit(0);
+    }, 10000); // Force exit after 10 seconds
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
