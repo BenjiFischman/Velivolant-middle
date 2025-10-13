@@ -16,13 +16,39 @@ const authRoutes = require('./routes/auth');
 
 const app = express();
 
+// Trust proxy headers (needed when running behind reverse proxies / Docker)
+app.set('trust proxy', 1);
+
 // CORS configuration for front-end
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+const defaultOrigins = ['http://localhost:8080', 'http://localhost:8081'];
+const envOriginsRaw = process.env.FRONTEND_URLS || process.env.FRONTEND_URL || '';
+const envOrigins = envOriginsRaw
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+
+const corsMiddleware = cors({
+  origin: (origin, callback) => {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    logger.warn('Blocked CORS request from unauthorized origin', { origin });
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}));
+});
+
+app.use(corsMiddleware);
+app.options('*', corsMiddleware);
 
 // Apply middleware
 app.use(express.json());
@@ -86,3 +112,17 @@ process.on('SIGTERM', () => {
 });
 
 module.exports = app;
+
+// Start server if this file is run directly (e.g., `node app.js`)
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    logger.info(`API server listening on port ${PORT}`, {
+      port: PORT,
+      env: process.env.NODE_ENV || 'development',
+    });
+  }).on('error', (error) => {
+    logger.error('Failed to start server', { error: error.message });
+    process.exit(1);
+  });
+}
