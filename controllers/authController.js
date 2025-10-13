@@ -14,9 +14,12 @@ const verifyPassword = async (password, hash) => {
   return bcrypt.compare(password, hash);
 };
 
-const generateToken = (userId, email, role = 'user') => {
+const generateToken = (userId, email, roles = ['consumer']) => {
+  // Ensure roles is always an array
+  const rolesArray = Array.isArray(roles) ? roles : [roles];
+  
   return jwt.sign(
-    { id: userId, email, role },
+    { id: userId, email, roles: rolesArray },
     process.env.JWT_SECRET,
     { expiresIn: '24h' }
   );
@@ -98,8 +101,19 @@ const authController = {
         };
       });
 
-      // Generate JWT token
-      const token = generateToken(result.user.id, email, 'user');
+      // Get user roles
+      const rolesResult = await db.query(
+        `SELECT r.role_key, r.role_name 
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1 AND ur.is_active = TRUE`,
+        [result.user.id]
+      );
+
+      const userRoles = rolesResult.rows.map(r => r.role_key);
+
+      // Generate JWT token with roles
+      const token = generateToken(result.user.id, email, userRoles);
 
       // Set token in cookie
       res.cookie('token', token, {
@@ -109,15 +123,24 @@ const authController = {
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       });
 
+      // Send verification email
+      const emailService = require('../services/emailService');
+      await emailService.sendVerificationEmail(
+        email,
+        result.user.username,
+        result.verificationToken
+      ).catch(err => logger.error('Failed to send verification email:', err));
+
       logger.info('User registered', { 
         userId: result.user.id, 
         email, 
-        username 
+        username,
+        roles: userRoles
       });
 
       res.status(201).json({
         success: true,
-        message: 'Account created successfully',
+        message: 'Account created successfully. Please check your email to verify your account.',
         data: {
           user: {
             id: result.user.id,
@@ -126,6 +149,7 @@ const authController = {
             firstName: result.account.first_name,
             lastName: result.account.last_name,
             emailVerified: result.account.email_verified,
+            roles: userRoles
           },
           token,
           ...(process.env.NODE_ENV !== 'production' && { 
@@ -193,8 +217,20 @@ const authController = {
         [user.id]
       );
 
-      // Generate JWT token
-      const token = generateToken(user.id, user.email, 'user');
+      // Get user roles
+      const rolesResult = await db.query(
+        `SELECT r.role_key, r.role_name 
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1 AND ur.is_active = TRUE
+           AND (ur.expires_at IS NULL OR ur.expires_at > NOW())`,
+        [user.id]
+      );
+
+      const userRoles = rolesResult.rows.map(r => r.role_key);
+
+      // Generate JWT token with roles
+      const token = generateToken(user.id, user.email, userRoles);
 
       // Set token in cookie
       res.cookie('token', token, {
@@ -204,7 +240,11 @@ const authController = {
         maxAge: 24 * 60 * 60 * 1000
       });
 
-      logger.info('User logged in', { userId: user.id, email: user.email });
+      logger.info('User logged in', { 
+        userId: user.id, 
+        email: user.email,
+        roles: userRoles
+      });
 
       res.json({
         success: true,
@@ -217,7 +257,7 @@ const authController = {
             firstName: user.first_name,
             lastName: user.last_name,
             emailVerified: user.email_verified,
-            role: 'user',
+            roles: userRoles,
           },
           token
         }
@@ -519,6 +559,32 @@ const authController = {
 
       const user = result.rows[0];
 
+      // Get user roles
+      const rolesResult = await db.query(
+        `SELECT r.role_id, r.role_key, r.role_name, r.level
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1 AND ur.is_active = TRUE
+           AND (ur.expires_at IS NULL OR ur.expires_at > NOW())`,
+        [req.user.id]
+      );
+
+      const roles = rolesResult.rows;
+      const roleKeys = roles.map(r => r.role_key);
+
+      // Get user permissions
+      const permissionsResult = await db.query(
+        `SELECT DISTINCT p.permission_key, p.permission_name
+         FROM user_roles ur
+         JOIN role_permissions rp ON ur.role_id = rp.role_id
+         JOIN permissions p ON rp.permission_id = p.permission_id
+         WHERE ur.user_id = $1 AND ur.is_active = TRUE
+           AND (ur.expires_at IS NULL OR ur.expires_at > NOW())`,
+        [req.user.id]
+      );
+
+      const permissions = permissionsResult.rows;
+
       res.json({
         success: true,
         data: {
@@ -530,7 +596,10 @@ const authController = {
           lastName: user.last_name,
           emailVerified: user.email_verified,
           balance: parseFloat(user.balance),
-          role: 'user',
+          roles: roleKeys,
+          rolesDetailed: roles,
+          permissions: permissions.map(p => p.permission_key),
+          permissionsDetailed: permissions,
           createdAt: user.created_at,
           lastLogin: user.last_login,
         }
@@ -563,7 +632,19 @@ const authController = {
       }
 
       const user = result.rows[0];
-      const token = generateToken(user.id, user.email, 'user');
+
+      // Get user roles for new token
+      const rolesResult = await db.query(
+        `SELECT r.role_key 
+         FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1 AND ur.is_active = TRUE
+           AND (ur.expires_at IS NULL OR ur.expires_at > NOW())`,
+        [user.id]
+      );
+
+      const userRoles = rolesResult.rows.map(r => r.role_key);
+      const token = generateToken(user.id, user.email, userRoles);
 
       res.cookie('token', token, {
         httpOnly: true,

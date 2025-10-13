@@ -13,6 +13,8 @@ const {
 
 // Import routes
 const authRoutes = require('./routes/auth');
+const contentRoutes = require('./routes/content');
+const subscriptionRoutes = require('./routes/subscriptions');
 
 const app = express();
 
@@ -60,8 +62,10 @@ app.use(sessionMiddleware);
 app.use(loggingMiddleware.httpLogger);
 app.use(performanceMiddleware);
 
-// Mount auth routes
+// Mount routes
 app.use('/api/auth', authRoutes);
+app.use('/api/content', contentRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
