@@ -13,6 +13,7 @@ const {
 
 // Import routes
 const authRoutes = require('./routes/auth');
+const computeRoutes = require('./routes/compute');
 
 const app = express();
 
@@ -60,8 +61,9 @@ app.use(sessionMiddleware);
 app.use(loggingMiddleware.httpLogger);
 app.use(performanceMiddleware);
 
-// Mount auth routes
+// Mount routes
 app.use('/api/auth', authRoutes);
+app.use('/api/compute', computeRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -105,10 +107,91 @@ app.use((err, req, res, next) => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('Server is shutting down');
-  // ... cleanup code ...
-  process.exit(0);
+const gracefulShutdown = async (signal) => {
+  logger.info(`${signal} received, starting graceful shutdown...`);
+  
+  const shutdownTimeout = setTimeout(() => {
+    logger.error('Graceful shutdown timeout, forcing exit');
+    process.exit(1);
+  }, 30000); // 30 second timeout
+
+  try {
+    // Close HTTP server
+    if (global.httpServer) {
+      logger.info('Closing HTTP server...');
+      await new Promise((resolve) => {
+        global.httpServer.close(resolve);
+      });
+      logger.info('✓ HTTP server closed');
+    }
+
+    // Close gRPC server
+    if (global.grpcServer) {
+      logger.info('Closing gRPC server...');
+      await new Promise((resolve) => {
+        global.grpcServer.tryShutdown(resolve);
+      });
+      logger.info('✓ gRPC server closed');
+    }
+
+    // Close WebSocket server
+    if (global.wsServer) {
+      logger.info('Closing WebSocket server...');
+      global.wsServer.shutdown();
+      logger.info('✓ WebSocket server closed');
+    }
+
+    // Close Kafka connections
+    if (global.kafkaProducer) {
+      logger.info('Closing Kafka producer...');
+      await global.kafkaProducer.disconnect();
+      logger.info('✓ Kafka producer closed');
+    }
+
+    if (global.kafkaConsumer) {
+      logger.info('Closing Kafka consumer...');
+      await global.kafkaConsumer.disconnect();
+      logger.info('✓ Kafka consumer closed');
+    }
+
+    // Close database pool
+    const db = require('./db/postgres');
+    if (db && db.pool) {
+      logger.info('Closing database connections...');
+      await db.close();
+      logger.info('✓ Database connections closed');
+    }
+
+    // Close Redis connection
+    const redis = require('./redisClient');
+    if (redis && redis.client) {
+      logger.info('Closing Redis connection...');
+      await redis.client.quit();
+      logger.info('✓ Redis connection closed');
+    }
+
+    clearTimeout(shutdownTimeout);
+    logger.info('Graceful shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during graceful shutdown', { error: error.message });
+    clearTimeout(shutdownTimeout);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', { error: error.message, stack: error.stack });
+  gracefulShutdown('UNCAUGHT_EXCEPTION');
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled promise rejection', { reason, promise });
 });
 
 module.exports = app;
@@ -121,7 +204,19 @@ if (require.main === module) {
   
   // Create HTTP server
   const httpServer = http.createServer(app);
+  global.httpServer = httpServer; // Store for graceful shutdown
   
+  // Initialize Kafka feeder (optional)
+  if (process.env.KAFKA_ENABLED !== 'false') {
+    const feeder = require('./kafka/feeder');
+    feeder.init().then(() => {
+      global.kafkaProducer = require('./kafka/producer');
+      global.kafkaConsumer = require('./kafka/consumer');
+    }).catch(err => {
+      logger.warn('Kafka feeder not started', { error: err.message });
+    });
+  }
+
   // Start HTTP server
   httpServer.listen(PORT, () => {
     logger.info(`HTTP API server listening on port ${PORT}`, {
@@ -140,8 +235,8 @@ if (require.main === module) {
       const grpcServer = startGrpcServer(GRPC_PORT);
       logger.info(`gRPC server enabled on port ${GRPC_PORT}`);
       
-      // Export for graceful shutdown
-      module.exports.grpcServer = grpcServer;
+      // Store for graceful shutdown
+      global.grpcServer = grpcServer;
     } catch (error) {
       logger.warn('gRPC server not started', { error: error.message });
     }
@@ -155,43 +250,116 @@ if (require.main === module) {
       wsServer.startHeartbeat();
       logger.info('WebSocket server enabled on /ws');
       
-      // Export for use in routes
-      module.exports.wsServer = wsServer;
+      // Store for graceful shutdown and routes
+      global.wsServer = wsServer;
     } catch (error) {
       logger.warn('WebSocket server not started', { error: error.message });
     }
   }
 
   // Enhanced graceful shutdown
-  const shutdown = () => {
-    logger.info('Server is shutting down...');
+  const shutdown = async () => {
+    logger.info('🛑 Shutdown signal received, initiating graceful shutdown...');
     
-    // Close HTTP server
-    httpServer.close(() => {
-      logger.info('HTTP server closed');
-    });
+    const shutdownTimeout = setTimeout(() => {
+      logger.error('❌ Graceful shutdown timeout exceeded, forcing exit');
+      process.exit(1);
+    }, 30000); // 30 second timeout
 
-    // Close gRPC server
-    if (module.exports.grpcServer) {
-      module.exports.grpcServer.forceShutdown();
-      logger.info('gRPC server closed');
-    }
+    try {
+      // Close HTTP server (stop accepting new connections)
+      if (httpServer) {
+        logger.info('Closing HTTP server...');
+        await new Promise((resolve) => {
+          httpServer.close(() => {
+            logger.info('✓ HTTP server closed');
+            resolve();
+          });
+        });
+      }
 
-    // Close WebSocket server
-    if (module.exports.wsServer) {
-      module.exports.wsServer.shutdown();
-    }
+      // Close gRPC server
+      if (global.grpcServer) {
+        logger.info('Closing gRPC server...');
+        await new Promise((resolve) => {
+          global.grpcServer.tryShutdown(() => {
+            logger.info('✓ gRPC server closed');
+            resolve();
+          });
+        });
+      }
 
-    // Kill any running tasks
-    const taskRunner = require('./orchestration/taskRunner');
-    taskRunner.killAll();
+      // Close WebSocket server
+      if (global.wsServer) {
+        logger.info('Closing WebSocket connections...');
+        global.wsServer.shutdown();
+        logger.info('✓ WebSocket server closed');
+      }
 
-    setTimeout(() => {
-      logger.info('Forcing shutdown');
+      // Close Kafka connections
+      if (global.kafkaProducer) {
+        logger.info('Flushing and closing Kafka producer...');
+        await global.kafkaProducer.disconnect();
+        logger.info('✓ Kafka producer closed');
+      }
+
+      if (global.kafkaConsumer) {
+        logger.info('Closing Kafka consumer...');
+        await global.kafkaConsumer.disconnect();
+        logger.info('✓ Kafka consumer closed');
+      }
+
+      // Close database pool
+      logger.info('Closing database connections...');
+      const db = require('./db/postgres');
+      if (db && db.close) {
+        await db.close();
+        logger.info('✓ Database connections closed');
+      }
+
+      // Close Redis connection
+      try {
+        const redis = require('./redisClient');
+        if (redis && redis.client) {
+          logger.info('Closing Redis connection...');
+          await redis.client.quit();
+          logger.info('✓ Redis connection closed');
+        }
+      } catch (err) {
+        logger.warn('Redis not initialized or already closed');
+      }
+
+      // Kill any running child processes
+      try {
+        const taskRunner = require('./orchestration/taskRunner');
+        logger.info('Terminating child processes...');
+        taskRunner.killAll();
+        logger.info('✓ Child processes terminated');
+      } catch (err) {
+        logger.warn('Task runner not initialized');
+      }
+
+      clearTimeout(shutdownTimeout);
+      logger.info('✅ Graceful shutdown complete');
       process.exit(0);
-    }, 10000); // Force exit after 10 seconds
+    } catch (error) {
+      logger.error('❌ Error during graceful shutdown', { 
+        error: error.message,
+        stack: error.stack 
+      });
+      clearTimeout(shutdownTimeout);
+      process.exit(1);
+    }
   };
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  
+  // Log successful startup
+  logger.info('🚀 Application initialized successfully', {
+    port: PORT,
+    grpc: process.env.ENABLE_GRPC !== 'false',
+    websocket: process.env.ENABLE_WS !== 'false',
+    kafka: process.env.KAFKA_ENABLED !== 'false',
+  });
 }
