@@ -65,25 +65,6 @@ else
     echo -e "${GREEN}✓ Database created${NC}"
 fi
 
-# Ensure database exists and is owned by the role
-current_owner=$(psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -tAc "SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$POSTGRES_DB';")
-if [ "$current_owner" != "$POSTGRES_USER" ]; then
-    echo -e "${YELLOW}Setting database owner to '$POSTGRES_USER'...${NC}"
-    psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -c "ALTER DATABASE \"$POSTGRES_DB\" OWNER TO \"$POSTGRES_USER\";" || {
-        echo -e "${RED}Failed to change database owner. Please adjust manually.${NC}"
-        exit 1
-    }
-fi
-
-# Ensure public schema privileges
-echo -e "${YELLOW}Configuring schema privileges...${NC}"
-psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -d $POSTGRES_DB -c "ALTER SCHEMA public OWNER TO \"$POSTGRES_USER\";" > /dev/null
-psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -d $POSTGRES_DB -c "GRANT ALL ON SCHEMA public TO \"$POSTGRES_USER\";" > /dev/null
-psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -d $POSTGRES_DB -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO \"$POSTGRES_USER\";" > /dev/null
-psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -d $POSTGRES_DB -c "GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO \"$POSTGRES_USER\";" > /dev/null
-psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -d $POSTGRES_DB -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO \"$POSTGRES_USER\";" > /dev/null
-psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U postgres -d $POSTGRES_DB -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO \"$POSTGRES_USER\";" > /dev/null
-
 echo ""
 
 # Ensure required role exists
