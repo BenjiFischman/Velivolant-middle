@@ -13,7 +13,7 @@ const {
 
 // Import routes
 const authRoutes = require('./routes/auth');
-const computeRoutes = require('./routes/compute');
+//const computeRoutes = require('./routes/compute');
 
 const app = express();
 
@@ -63,7 +63,7 @@ app.use(performanceMiddleware);
 
 // Mount routes
 app.use('/api/auth', authRoutes);
-app.use('/api/compute', computeRoutes);
+//app.use('/api/compute', computeRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -207,14 +207,18 @@ if (require.main === module) {
   global.httpServer = httpServer; // Store for graceful shutdown
   
   // Initialize Kafka feeder (optional)
-  if (process.env.KAFKA_ENABLED !== 'false') {
-    const feeder = require('./kafka/feeder');
-    feeder.init().then(() => {
-      global.kafkaProducer = require('./kafka/producer');
-      global.kafkaConsumer = require('./kafka/consumer');
-    }).catch(err => {
-      logger.warn('Kafka feeder not started', { error: err.message });
-    });
+  if (process.env.KAFKA_ENABLED === 'true') {
+    try {
+      const feeder = require('./kafka/feeder');
+      feeder.init().then(() => {
+        global.kafkaProducer = require('./kafka/producer');
+        global.kafkaConsumer = require('./kafka/consumer');
+      }).catch(err => {
+        logger.warn('Kafka feeder not started', { error: err.message });
+      });
+    } catch (error) {
+      logger.warn('Kafka modules not found, skipping Kafka initialization');
+    }
   }
 
   // Start HTTP server
